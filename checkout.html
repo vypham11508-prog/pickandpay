@@ -116,6 +116,7 @@
   <script src="data.js"></script>
   <script src="vietnam-address.js"></script>
   <script src="auth.js"></script>
+  <script src="firebase.js"></script>
   <script>
     function doSearch() {
       const q = document.getElementById('search-input').value.trim();
@@ -194,7 +195,7 @@
       }).join('');
     }
 
-    function placeOrder() {
+    async function placeOrder() {
       const name=document.getElementById('receiver-name').value.trim();
       const phone=document.getElementById('receiver-phone').value.trim();
       const address=document.getElementById('receiver-address').value.trim();
@@ -206,12 +207,23 @@
       const orderId='#VN'+Date.now().toString().slice(-10);
       const subtotal=getSubtotal();
       const total=Math.max(0,subtotal+(shipFee>0?shipFee:0)-voucherDiscount);
-      const newOrder={id:orderId,date:new Date().toLocaleDateString('vi-VN'),items:[...cart],total,shipLabel,payLabel,voucher:appliedCode,receiver:{name,phone,address,province},status:'pending'};
-      const orders=JSON.parse(localStorage.getItem('orders')||'[]');
-      orders.unshift(newOrder); localStorage.setItem('orders',JSON.stringify(orders));
-      localStorage.setItem('lastOrder',orderId);
-      // Cộng điểm
       const user=getUser();
+      const newOrder={
+        id:orderId,
+        date:new Date().toLocaleDateString('vi-VN'),
+        items:[...cart],total,shipLabel,payLabel,
+        voucher:appliedCode,
+        receiver:{name,phone,address,province},
+        status:'pending',
+        buyerEmail: user ? user.email : 'guest',
+        buyerName: user ? user.name : name,
+        createdAt: Date.now()
+      };
+
+      // Lưu đơn: localStorage + sync Firebase
+      await saveOrderSync(newOrder);
+
+      // Cộng điểm
       if(user){user.points=(user.points||0)+Math.floor(total/1000);user.spent=(user.spent||0)+total;saveUser(user);}
       saveCart([]);
       window.location.href='order-success.html';

@@ -107,14 +107,9 @@
 
   <script src="auth.js"></script>
   <script src="data.js"></script>
+  <script src="firebase.js"></script>
   <script>
     function doSearch() {
-      const q = document.getElementById('search-input').value.trim();
-      if (q) window.location.href = 'products.html?q=' + encodeURIComponent(q);
-    }
-
-    let currentTab = 'all';
-    let currentModalOrderId = null;
 
     const STATUS_CONFIG = {
       pending:   { label: '🕐 Chờ xác nhận', cls: 'status-confirmed', progress: '5%',  dots: [0,0,0,0] },
@@ -124,10 +119,9 @@
       cancelled: { label: '❌ Đã hủy',        cls: 'pill-cancel',      progress: '0%',  dots: [0,0,0,0] },
     };
 
-    function getOrders() {
-      return JSON.parse(localStorage.getItem('orders') || '[]');
-    }
+    function getOrders() { return allOrders; }
     function saveOrders(orders) {
+      allOrders = orders;
       localStorage.setItem('orders', JSON.stringify(orders));
     }
 
@@ -254,6 +248,7 @@
     });
 
     renderOrders();
+    loadBuyerOrders(); // Sync từ Firebase
     renderHeaderNav('nav-container');
     updateCartBadge();
   </script>

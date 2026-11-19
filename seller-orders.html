@@ -9,7 +9,11 @@
 <body>
   <div class="seller-header">
     <div class="shop-name">🏪 <span id="shop-name-display">Pick&amp;Pay Shop</span></div>
-    <div style="display:flex;align-items:center;gap:14px;"><a href="index.html" style="color:var(--yellow);font-size:0.84rem;">← Về trang mua sắm</a></div>
+    <div style="display:flex;align-items:center;gap:14px;">
+      <span id="sync-status" style="font-size:0.78rem;padding:4px 10px;border-radius:12px;background:rgba(255,255,255,0.1);color:rgba(255,255,255,0.7);">⏳ Đang tải...</span>
+      <button onclick="loadAllOrders()" style="background:var(--yellow);color:#1A1A1A;border:none;padding:6px 14px;border-radius:8px;font-weight:700;cursor:pointer;font-size:0.82rem;">🔄 Làm mới</button>
+      <a href="index.html" style="color:var(--yellow);font-size:0.84rem;">← Về trang mua sắm</a>
+    </div>
   </div>
   <nav class="seller-nav">
     <a href="seller-dashboard.html">📊 Tổng quan</a>
@@ -20,15 +24,20 @@
   </nav>
 
   <div class="container seller-content">
-    <h2 style="font-size:1.2rem;color:var(--dark);margin-bottom:18px;">🛒 Quản lý đơn hàng</h2>
-    <div class="tab-bar" id="status-tabs">
-      <button class="tab-btn active" onclick="setTab('all',this)">Tất cả</button>
-      <button class="tab-btn" onclick="setTab('pending',this)">Chờ xác nhận</button>
-      <button class="tab-btn" onclick="setTab('packing',this)">Đang đóng gói</button>
-      <button class="tab-btn" onclick="setTab('shipping',this)">Đang giao</button>
-      <button class="tab-btn" onclick="setTab('delivered',this)">Đã hoàn tất</button>
-      <button class="tab-btn" onclick="setTab('cancelled',this)">Đã hủy</button>
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:18px;">
+      <h2 style="font-size:1.2rem;color:var(--dark);">🛒 Quản lý đơn hàng</h2>
+      <div style="font-size:0.82rem;color:#888;" id="last-sync-text"></div>
     </div>
+
+    <div class="tab-bar" id="status-tabs">
+      <button class="tab-btn active" onclick="setTab('all',this)">Tất cả <span id="cnt-all" class="badge" style="background:var(--dark);">0</span></button>
+      <button class="tab-btn" onclick="setTab('pending',this)">Chờ XN <span id="cnt-pending" class="badge" style="background:#1565c0;">0</span></button>
+      <button class="tab-btn" onclick="setTab('packing',this)">Đóng gói <span id="cnt-packing" class="badge" style="background:#e65100;">0</span></button>
+      <button class="tab-btn" onclick="setTab('shipping',this)">Đang giao <span id="cnt-shipping" class="badge" style="background:#4527a0;">0</span></button>
+      <button class="tab-btn" onclick="setTab('delivered',this)">Hoàn tất <span id="cnt-delivered" class="badge" style="background:#2e7d32;">0</span></button>
+      <button class="tab-btn" onclick="setTab('cancelled',this)">Đã hủy <span id="cnt-cancelled" class="badge" style="background:#b71c1c;">0</span></button>
+    </div>
+
     <div class="toolbar">
       <input type="text" id="search-order" placeholder="🔍 Mã đơn hoặc tên khách..." oninput="renderOrders()" />
       <select id="filter-time" onchange="renderOrders()">
@@ -38,15 +47,16 @@
         <option value="month">Tháng này</option>
       </select>
     </div>
+
     <div class="new-orders-table">
       <div class="table-wrap"><table>
         <thead><tr><th>Mã đơn</th><th>Khách hàng</th><th>Sản phẩm</th><th>Tổng tiền</th><th>Ngày đặt</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
-        <tbody id="orders-tbody"></tbody>
+        <tbody id="orders-tbody"><tr><td colspan="7" style="text-align:center;padding:40px;color:#888;">⏳ Đang tải đơn hàng...</td></tr></tbody>
       </table></div>
     </div>
   </div>
 
-  <!-- MODAL CHI TIẾT -->
+  <!-- MODAL CHI TIẾT ĐƠN -->
   <div class="modal-overlay" id="order-modal">
     <div class="modal-box">
       <button class="modal-close" onclick="closeModal()">✕</button>
@@ -59,10 +69,13 @@
   <script src="auth.js"></script>
   <script src="data.js"></script>
   <script src="seller-data.js"></script>
+  <script src="firebase.js"></script>
   <script>
     const user = getUser();
     if (user) document.getElementById('shop-name-display').textContent = user.shopName||'Pick&Pay Shop';
+
     let currentTab = 'all', currentOrderId = null;
+    let allOrders = []; // cache đơn hàng đã load
 
     const statusLabel = {
       pending:'<span class="status-pill pill-new">Chờ xác nhận</span>',
@@ -72,6 +85,100 @@
       cancelled:'<span class="status-pill pill-cancel">Đã hủy</span>'
     };
 
+    // ===== LOAD ĐƠN HÀNG: Firebase + localStorage =====
+    async function loadAllOrders() {
+      setSyncStatus('loading');
+      try {
+        // 1. Load từ Firebase (đơn của người mua từ máy khác)
+        const firebaseOrders = await getOrdersFromFirebase();
+
+        // 2. Load từ localStorage (đơn mẫu của seller + đơn local)
+        const sellerSample = getSellerOrders(); // sample data trong seller-data.js
+        const localBuyerOrders = JSON.parse(localStorage.getItem('orders') || '[]');
+
+        // 3. Chuẩn hóa format Firebase orders (người mua đặt)
+        const normalizedFirebase = firebaseOrders.map(o => ({
+          id: o.id,
+          customer: o.receiver ? o.receiver.name : (o.buyerName||'Khách'),
+          phone: o.receiver ? o.receiver.phone : '—',
+          address: o.receiver ? `${o.receiver.address}, ${o.receiver.province}` : '—',
+          date: o.date || new Date(o.createdAt||Date.now()).toLocaleDateString('vi-VN'),
+          status: o.status || 'pending',
+          items: o.items || [],
+          total: o.total || 0,
+          source: 'firebase', // đánh dấu nguồn
+          createdAt: o.createdAt || 0
+        }));
+
+        // 4. Chuẩn hóa local buyer orders
+        const normalizedLocal = localBuyerOrders.map(o => ({
+          id: o.id,
+          customer: o.receiver ? o.receiver.name : 'Khách',
+          phone: o.receiver ? o.receiver.phone : '—',
+          address: o.receiver ? `${o.receiver.address||''}, ${o.receiver.province||''}` : '—',
+          date: o.date,
+          status: o.status || 'pending',
+          items: o.items || [],
+          total: o.total || 0,
+          source: 'local',
+          createdAt: o.createdAt || 0
+        }));
+
+        // 5. Merge tất cả, loại trùng theo id, ưu tiên Firebase (mới hơn)
+        const merged = [...sellerSample];
+        const mergeList = [...normalizedFirebase, ...normalizedLocal];
+        mergeList.forEach(o => {
+          const existing = merged.findIndex(x => x.id === o.id);
+          if (existing >= 0) {
+            // Firebase có status mới hơn → cập nhật
+            if ((o.createdAt||0) >= (merged[existing].createdAt||0)) {
+              merged[existing] = { ...merged[existing], ...o };
+            }
+          } else {
+            merged.unshift(o);
+          }
+        });
+
+        // Sort: mới nhất lên đầu
+        allOrders = merged.sort((a,b) => (b.createdAt||0)-(a.createdAt||0));
+        updateCounts();
+        renderOrders();
+        setSyncStatus('ok', firebaseOrders.length);
+      } catch (e) {
+        console.warn('Load orders failed, using sample data:', e);
+        allOrders = getSellerOrders();
+        updateCounts();
+        renderOrders();
+        setSyncStatus('error');
+      }
+    }
+
+    function setSyncStatus(state, count) {
+      const el = document.getElementById('sync-status');
+      const txt = document.getElementById('last-sync-text');
+      if (state === 'loading') {
+        el.textContent = '⏳ Đang tải...';
+        el.style.background = 'rgba(255,255,255,0.1)';
+      } else if (state === 'ok') {
+        el.textContent = `🔥 Firebase: ${count} đơn`;
+        el.style.background = 'rgba(163,180,84,0.3)';
+        el.style.color = '#A3B454';
+        txt.textContent = 'Cập nhật lúc ' + new Date().toLocaleTimeString('vi-VN');
+      } else {
+        el.textContent = '⚠️ Offline';
+        el.style.background = 'rgba(229,57,53,0.2)';
+        el.style.color = '#ff8a80';
+      }
+    }
+
+    function updateCounts() {
+      ['all','pending','packing','shipping','delivered','cancelled'].forEach(tab => {
+        const count = tab === 'all' ? allOrders.length : allOrders.filter(o=>o.status===tab).length;
+        const el = document.getElementById('cnt-'+tab);
+        if (el) el.textContent = count;
+      });
+    }
+
     function setTab(tab, btn) {
       currentTab = tab;
       document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
@@ -79,8 +186,9 @@
     }
 
     function parseVNDate(str) {
-      // dd/mm/yyyy
+      if (!str) return new Date(0);
       const parts = str.split('/');
+      if (parts.length < 3) return new Date(0);
       return new Date(parseInt(parts[2]), parseInt(parts[1])-1, parseInt(parts[0]));
     }
 
@@ -88,60 +196,103 @@
       const q = document.getElementById('search-order').value.toLowerCase();
       const tf = document.getElementById('filter-time').value;
       const today = new Date(); today.setHours(0,0,0,0);
-      let orders = getSellerOrders().filter(o => {
-        const mTab = currentTab==='all'||o.status===currentTab;
-        const mQ = !q||(o.id.toLowerCase().includes(q)||o.customer.toLowerCase().includes(q));
+
+      let orders = allOrders.filter(o => {
+        const mTab = currentTab==='all' || o.status===currentTab;
+        const name = o.customer || o.buyerName || '';
+        const mQ = !q || (o.id.toLowerCase().includes(q) || name.toLowerCase().includes(q));
         let mTime = true;
-        if (tf!=='all') {
-          const d = parseVNDate(o.date); d.setHours(0,0,0,0);
-          const diff = Math.floor((today-d)/(1000*60*60*24));
+        if (tf !== 'all') {
+          const d = o.createdAt ? new Date(o.createdAt) : parseVNDate(o.date);
+          d.setHours(0,0,0,0);
+          const diff = Math.floor((today-d)/(86400000));
           if (tf==='today') mTime = diff===0;
           else if (tf==='week') mTime = diff<=7;
           else if (tf==='month') mTime = diff<=30;
         }
-        return mTab&&mQ&&mTime;
+        return mTab && mQ && mTime;
       });
-      document.getElementById('orders-tbody').innerHTML = orders.length ? orders.map(o=>`<tr style="cursor:pointer;" onclick="openModal('${o.id}')">
-        <td><strong>${o.id}</strong></td>
-        <td>${o.customer}<br/><span style="font-size:0.75rem;color:#888;">${o.phone}</span></td>
-        <td style="font-size:0.83rem;">${o.items[0].emoji} ${o.items[0].name}${o.items.length>1?` <span style="color:#888;">+${o.items.length-1}</span>`:''}</td>
-        <td><strong style="color:#e53935;">${formatPrice(o.total)}</strong></td>
-        <td style="font-size:0.82rem;">${o.date}</td>
-        <td>${statusLabel[o.status]||''}</td>
-        <td onclick="event.stopPropagation()"><button class="btn-action btn-view" onclick="openModal('${o.id}')">Xem</button></td>
-      </tr>`).join('') : '<tr><td colspan="7" style="text-align:center;color:#888;padding:32px;">Không có đơn hàng</td></tr>';
+
+      const sourceIcon = o => o.source==='firebase'
+        ? '<span title="Đơn từ người mua" style="font-size:0.7rem;background:#e3f2fd;color:#1565c0;padding:1px 5px;border-radius:4px;margin-left:4px;">🔥 Online</span>'
+        : '';
+
+      document.getElementById('orders-tbody').innerHTML = orders.length
+        ? orders.map(o => {
+            const name = o.customer || o.buyerName || 'Khách';
+            const phone = o.phone || '—';
+            const firstItem = (o.items && o.items[0]) || {};
+            return `<tr style="cursor:pointer;" onclick="openModal('${o.id}')">
+              <td><strong>${o.id}</strong>${sourceIcon(o)}</td>
+              <td>${name}<br/><span style="font-size:0.75rem;color:#888;">${phone}</span></td>
+              <td style="font-size:0.83rem;">${firstItem.emoji||''} ${firstItem.name||'—'}${o.items&&o.items.length>1?` <span style="color:#888;">+${o.items.length-1}</span>`:''}</td>
+              <td><strong style="color:#e53935;">${formatPrice(o.total||0)}</strong></td>
+              <td style="font-size:0.82rem;">${o.date||'—'}</td>
+              <td>${statusLabel[o.status]||''}</td>
+              <td onclick="event.stopPropagation()"><button class="btn-action btn-view" onclick="openModal('${o.id}')">Xem</button></td>
+            </tr>`;
+          }).join('')
+        : '<tr><td colspan="7" style="text-align:center;color:#888;padding:32px;">Không có đơn hàng</td></tr>';
     }
 
     function openModal(id) {
       currentOrderId = id;
-      const o = getSellerOrders().find(x=>x.id===id); if(!o) return;
-      document.getElementById('modal-title').textContent = 'Đơn hàng ' + o.id;
+      const o = allOrders.find(x=>x.id===id); if(!o) return;
+      const name = o.customer || o.buyerName || 'Khách';
+      document.getElementById('modal-title').innerHTML = 'Đơn hàng ' + o.id +
+        (o.source==='firebase' ? ' <span style="font-size:0.7rem;background:#e3f2fd;color:#1565c0;padding:2px 8px;border-radius:6px;">🔥 Đơn từ người mua</span>' : '');
       document.getElementById('modal-content').innerHTML = `
-        <div class="modal-row"><span>Khách hàng</span><span><strong>${o.customer}</strong></span></div>
-        <div class="modal-row"><span>Điện thoại</span><span>${o.phone}</span></div>
-        <div class="modal-row"><span>Địa chỉ giao</span><span style="text-align:right;max-width:220px;">${o.address}</span></div>
-        <div class="modal-row"><span>Ngày đặt</span><span>${o.date}</span></div>
-        <div class="modal-row"><span>Trạng thái</span><span>${statusLabel[o.status]}</span></div>
+        <div class="modal-row"><span>Khách hàng</span><span><strong>${name}</strong></span></div>
+        <div class="modal-row"><span>Điện thoại</span><span>${o.phone||'—'}</span></div>
+        <div class="modal-row"><span>Địa chỉ giao</span><span style="text-align:right;max-width:220px;">${o.address||'—'}</span></div>
+        <div class="modal-row"><span>Ngày đặt</span><span>${o.date||'—'}</span></div>
+        <div class="modal-row"><span>Trạng thái</span><span>${statusLabel[o.status]||o.status}</span></div>
         <div style="margin:12px 0 6px;font-weight:700;font-size:0.85rem;color:var(--dark);">🛍️ Sản phẩm:</div>
-        ${o.items.map(i=>`<div class="modal-row"><span>${i.emoji} ${i.name} x${i.qty}</span><span>${formatPrice(i.price*i.qty)}</span></div>`).join('')}
-        <div class="modal-row" style="margin-top:8px;border-top:2px solid var(--yellow);padding-top:8px;"><span><strong>Tổng tiền</strong></span><span style="color:#e53935;font-weight:800;font-size:1.05rem;">${formatPrice(o.total)}</span></div>`;
+        ${(o.items||[]).map(i=>`<div class="modal-row"><span>${i.emoji||''} ${i.name||''} x${i.qty||1}</span><span>${formatPrice((i.price||0)*(i.qty||1))}</span></div>`).join('')}
+        <div class="modal-row" style="margin-top:8px;border-top:2px solid var(--yellow);padding-top:8px;">
+          <span><strong>Tổng tiền</strong></span>
+          <span style="color:#e53935;font-weight:800;font-size:1.05rem;">${formatPrice(o.total||0)}</span>
+        </div>`;
+
       const acts = document.getElementById('modal-actions');
       acts.innerHTML = '';
       if (o.status==='pending') acts.innerHTML += `<button onclick="updateStatus('${id}','packing')" style="flex:1;padding:10px;background:var(--green);border:none;color:white;border-radius:8px;font-weight:700;cursor:pointer;">✅ Xác nhận đơn</button>`;
-      if (o.status==='packing') acts.innerHTML += `<button onclick="updateStatus('${id}','shipping')" style="flex:1;padding:10px;background:var(--orange);border:none;color:var(--dark);border-radius:8px;font-weight:700;cursor:pointer;">🚚 Bàn giao vận chuyển</button>`;
+      if (o.status==='packing') acts.innerHTML += `<button onclick="updateStatus('${id}','shipping')" style="flex:1;padding:10px;background:var(--orange);border:none;color:#1A1A1A;border-radius:8px;font-weight:700;cursor:pointer;">🚚 Bàn giao vận chuyển</button>`;
       if (o.status==='shipping') acts.innerHTML += `<button onclick="updateStatus('${id}','delivered')" style="flex:1;padding:10px;background:var(--green);border:none;color:white;border-radius:8px;font-weight:700;cursor:pointer;">✅ Xác nhận đã giao</button>`;
       if (['pending','packing'].includes(o.status)) acts.innerHTML += `<button onclick="updateStatus('${id}','cancelled')" style="padding:10px 18px;background:#fee;border:2px solid #e53935;color:#e53935;border-radius:8px;font-weight:700;cursor:pointer;">❌ Hủy đơn</button>`;
       document.getElementById('order-modal').classList.add('open');
     }
+
     function closeModal() { document.getElementById('order-modal').classList.remove('open'); }
-    function updateStatus(id, status) {
-      const orders = getSellerOrders();
-      const o = orders.find(x=>x.id===id); if(o) o.status=status;
-      saveSellerOrders(orders); closeModal(); renderOrders();
+
+    async function updateStatus(id, status) {
+      // Cập nhật local cache
+      const o = allOrders.find(x=>x.id===id);
+      if (o) { o.status = status; o.updatedAt = Date.now(); }
+
+      // Sync Firebase
+      await updateOrderStatus(id, status);
+
+      // Cập nhật localStorage seller sample nếu là đơn mẫu
+      const sampleOrders = getSellerOrders();
+      const so = sampleOrders.find(x=>x.id===id);
+      if (so) { so.status=status; saveSellerOrders(sampleOrders); }
+
+      closeModal();
+      updateCounts();
+      renderOrders();
       showToast('✅ Đã cập nhật trạng thái đơn hàng');
     }
-    document.getElementById('order-modal').addEventListener('click',e=>{if(e.target===document.getElementById('order-modal'))closeModal();});
-    renderOrders();
+
+    document.getElementById('order-modal').addEventListener('click', e=>{
+      if(e.target===document.getElementById('order-modal')) closeModal();
+    });
+
+    // Load ngay khi mở trang
+    loadAllOrders();
+
+    // Tự động làm mới mỗi 30 giây
+    setInterval(loadAllOrders, 30000);
   </script>
 </body>
 </html>
